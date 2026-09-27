@@ -42,6 +42,12 @@ fun AuthScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
 
+    var showForgotPasswordDialog by remember { mutableStateOf(false) }
+    var resetEmail by remember { mutableStateOf("") }
+    var resetLoading by remember { mutableStateOf(false) }
+    var resetDialogMessage by remember { mutableStateOf<String?>(null) }
+    var resetDialogSuccess by remember { mutableStateOf(false) }
+
     val scope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
 
@@ -210,6 +216,27 @@ fun AuthScreen(
                                 .fillMaxWidth()
                                 .testTag("confirm_password_input")
                         )
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    resetEmail = email.trim()
+                                    resetDialogMessage = null
+                                    resetDialogSuccess = false
+                                    showForgotPasswordDialog = true
+                                },
+                                modifier = Modifier.testTag("forgot_password_button")
+                            ) {
+                                Text(
+                                    text = "পাসওয়ার্ড ভুলে গেছেন? (Forgot Password?)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
                     }
 
                     if (errorMessage != null) {
@@ -300,55 +327,113 @@ fun AuthScreen(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // Quick Demo Credentials Card
+            // Firebase Security Info Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "দ্রুত পরীক্ষার জন্য নির্বাচন করুন (Quick Access):",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                email = "student@medhaquiz.com"
-                                password = "password123"
-                                isRegisterMode = false
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(44.dp)
-                                .testTag("demo_student_button")
-                        ) {
-                            Text("শিক্ষার্থী (Student)", fontSize = 12.sp)
-                        }
-                        Button(
-                            onClick = {
-                                email = "admin@medhaquiz.com"
-                                password = "adminPassword123"
-                                isRegisterMode = false
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(44.dp)
-                                .testTag("demo_admin_button"),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
-                        ) {
-                            Text("অ্যাডমিন (Admin)", fontSize = 12.sp)
-                        }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Security,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "রিয়েল ফায়ারবেস অথেন্টিকেশন ও সিকিউরিটি",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "ফায়ারবেস অথ ও কাস্টম ক্লেইম (admin: true) দ্বারা সুরক্ষিত। সাধারণ ইউজাররা সরাসরি নিবন্ধনের পর ইউজার প্যানেল ব্যবহার করতে পারবেন।",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 
             Spacer(modifier = Modifier.height(32.dp))
+        }
+
+        // Forgot Password Dialog
+        if (showForgotPasswordDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    if (!resetLoading) showForgotPasswordDialog = false
+                },
+                title = {
+                    Text("পাসওয়ার্ড রিসেট (Password Reset)")
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            "আপনার অ্যাকাউন্টের ইমেইল ঠিকানা প্রদান করুন। আমরা একটি পাসওয়ার্ড রিসেট লিংক প্রেরণ করব।"
+                        )
+                        OutlinedTextField(
+                            value = resetEmail,
+                            onValueChange = { resetEmail = it },
+                            label = { Text("ইমেইল (Email)") },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("reset_email_input"),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
+                        )
+                        if (resetDialogMessage != null) {
+                            Text(
+                                text = resetDialogMessage ?: "",
+                                color = if (resetDialogSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (resetEmail.isBlank()) {
+                                resetDialogMessage = "দয়া করে ইমেইল লিখুন"
+                                resetDialogSuccess = false
+                                return@Button
+                            }
+                            resetLoading = true
+                            resetDialogMessage = null
+                            scope.launch {
+                                val result = authManager.sendPasswordReset(resetEmail.trim())
+                                resetLoading = false
+                                result.onSuccess {
+                                    resetDialogSuccess = true
+                                    resetDialogMessage = "পাসওয়ার্ড রিসেট ইমেইল সফলভাবে পাঠানো হয়েছে! আপনার ইনবক্স চেক করুন।"
+                                }.onFailure {
+                                    resetDialogSuccess = false
+                                    resetDialogMessage = it.localizedMessage ?: "রিসেট ইমেইল পাঠাতে ব্যর্থ হয়েছে"
+                                }
+                            }
+                        },
+                        enabled = !resetLoading,
+                        modifier = Modifier.testTag("send_reset_email_button")
+                    ) {
+                        if (resetLoading) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text("লিংক পাঠান")
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { showForgotPasswordDialog = false },
+                        enabled = !resetLoading
+                    ) {
+                        Text("বাতিল")
+                    }
+                }
+            )
         }
     }
 }

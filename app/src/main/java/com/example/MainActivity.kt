@@ -50,7 +50,11 @@ class MainActivity : ComponentActivity() {
                             CircularProgressIndicator()
                         }
                     } else {
-                        val startDestination = if (currentUser == null) "auth" else "user_main"
+                        val startDestination = when {
+                            currentUser == null -> "auth"
+                            currentUser?.isAdmin == true -> "admin_main"
+                            else -> "user_main"
+                        }
 
                         NavHost(
                             navController = navController,
@@ -61,7 +65,8 @@ class MainActivity : ComponentActivity() {
                                 AuthScreen(
                                     authManager = authManager,
                                     onAuthSuccess = {
-                                        navController.navigate("user_main") {
+                                        val dest = if (authManager.currentUser.value?.isAdmin == true) "admin_main" else "user_main"
+                                        navController.navigate(dest) {
                                             popUpTo("auth") { inclusive = true }
                                         }
                                     }
@@ -173,14 +178,22 @@ class MainActivity : ComponentActivity() {
 
                             // Admin Panel
                             composable("admin_main") {
-                                AdminMainScreen(
-                                    adminRepository = adminRepository,
-                                    quizRepository = quizRepository,
-                                    adminUid = currentUser?.uid ?: "admin_root",
-                                    onBackToUserPanel = {
-                                        navController.popBackStack()
+                                if (currentUser?.isAdmin != true) {
+                                    LaunchedEffect(Unit) {
+                                        navController.navigate("user_main") {
+                                            popUpTo("admin_main") { inclusive = true }
+                                        }
                                     }
-                                )
+                                } else {
+                                    AdminMainScreen(
+                                        adminRepository = adminRepository,
+                                        quizRepository = quizRepository,
+                                        adminUid = currentUser?.uid ?: "admin_root",
+                                        onBackToUserPanel = {
+                                            navController.popBackStack()
+                                        }
+                                    )
+                                }
                             }
                         }
                     }

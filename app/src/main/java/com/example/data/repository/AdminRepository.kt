@@ -333,6 +333,10 @@ class AdminRepository private constructor(context: Context) {
             educationDao.insertQuiz(quizEntity)
             educationDao.insertQuestions(questions)
             recordAudit(adminUid, "JSON_QUIZ_IMPORTED", "quizzes", quizId, "Imported '${schema.title}' with ${questions.size} questions")
+            firestore?.collection("quizzes")?.document(quizId)?.set(quizEntity)
+            for (q in questions) {
+                firestore?.collection("questions")?.document(q.id)?.set(q)
+            }
             return@withContext Result.success(quizId)
         } catch (e: Exception) {
             return@withContext Result.failure(e)
@@ -397,11 +401,13 @@ class AdminRepository private constructor(context: Context) {
         )
         announcementDao.insertAnnouncement(entity)
         recordAudit(adminUid, "ANNOUNCEMENT_CREATED", "announcements", entity.id, entity.title)
+        firestore?.collection("announcements")?.document(entity.id)?.set(entity)
     }
 
     suspend fun deleteAnnouncement(id: String, adminUid: String) = withContext(Dispatchers.IO) {
         announcementDao.deleteAnnouncement(id)
         recordAudit(adminUid, "ANNOUNCEMENT_DELETED", "announcements", id, "Announcement removed")
+        firestore?.collection("announcements")?.document(id)?.delete()
     }
 
     // --- Audit Logging ---

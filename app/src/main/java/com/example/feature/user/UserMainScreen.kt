@@ -19,14 +19,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import coil.compose.AsyncImage
 import com.example.R
 import com.example.core.ai.AiManager
 import com.example.core.auth.AuthManager
+import com.example.core.storage.FirebaseStorageManager
 import com.example.core.model.*
 import com.example.data.repository.QuizRepository
 import com.example.ui.components.DifficultyBadge
@@ -146,6 +152,7 @@ fun UserMainScreen(
                     classes = classes
                 )
                 UserTab.PROFILE -> ProfileContent(
+                    authManager = authManager,
                     currentUser = currentUser,
                     classes = classes,
                     onClassChanged = {
@@ -961,12 +968,41 @@ fun AiAssistantContent(
 // -------------------------------------------------------------
 @Composable
 fun ProfileContent(
+    authManager: AuthManager,
     currentUser: UserProfile?,
     classes: List<EducationClass>,
     onClassChanged: (String) -> Unit,
     onOpenAdminPanel: () -> Unit,
     onLogout: () -> Unit
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var showEditProfileDialog by remember { mutableStateOf(false) }
+    var editName by remember { mutableStateOf(currentUser?.name ?: "") }
+    var isSavingProfile by remember { mutableStateOf(false) }
+    var isUploadingPhoto by remember { mutableStateOf(false) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null && currentUser != null) {
+            isUploadingPhoto = true
+            statusMessage = "ছবি আপলোড হচ্ছে..."
+            scope.launch {
+                val storageResult = FirebaseStorageManager.getInstance(context).uploadProfileImage(currentUser.uid, uri)
+                storageResult.onSuccess { downloadUrl ->
+                    authManager.updateProfile(name = currentUser.name, photoUrl = downloadUrl)
+                    statusMessage = "ছবি সফলভাবে সংরক্ষিত হয়েছে!"
+                    isUploadingPhoto = false
+                }.onFailure { err ->
+                    statusMessage = err.localizedMessage ?: "ছবি আপলোড ব্যর্থ হয়েছে"
+                    isUploadingPhoto = false
+                }
+            }
+        }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -985,24 +1021,57 @@ fun ProfileContent(
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(60.dp)
+                            .size(68.dp)
                             .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primaryContainer),
+                            .background(MaterialTheme.colorScheme.primaryContainer)
+                            .clickable {
+                                photoPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            },
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Person,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(32.dp)
-                        )
+                        if (!currentUser?.photoUrl.isNullOrBlank()) {
+                            AsyncImage(
+                                model = currentUser?.photoUrl,
+                                contentDescription = "Profile Photo",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Person,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(36.dp)
+                            )
+                        }
+                        if (isUploadingPhoto) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = 0.5f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White, strokeWidth = 2.dp)
+                            }
+                        }
                     }
                     Spacer(modifier = Modifier.width(16.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = currentUser?.name ?: "Student",
-                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = currentUser?.name ?: "Student",
+                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(onClick = {
+                                editName = currentUser?.name ?: ""
+                                showEditProfileDialog = true
+                            }) {
+                                Icon(Icons.Default.Edit, contentDescription = "Edit Profile", tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
                         Text(
                             text = currentUser?.email ?: "",
                             style = MaterialTheme.typography.bodyMedium,
@@ -1021,6 +1090,14 @@ fun ProfileContent(
                             )
                         }
                     }
+                }
+                if (statusMessage != null) {
+                    Text(
+                        text = statusMessage ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 20.dp, bottom = 12.dp)
+                    )
                 }
             }
         }
@@ -1134,5 +1211,57 @@ fun ProfileContent(
                 Text("লগআউট করুন (Log Out)")
             }
         }
+    }
+
+    if (showEditProfileDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!isSavingProfile) showEditProfileDialog = false },
+            title = { Text("প্রোফাইল সম্পাদনা করুন (Edit Profile)") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        value = editName,
+                        onValueChange = { editName = it },
+                        label = { Text("আপনার নাম (Full Name)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("edit_name_input")
+                    )
+                    Text(
+                        text = "দ্রষ্টব্য: রোল (Role) এবং অ্যাডমিন অনুমতি ক্লায়েন্ট থেকে পরিবর্তনযোগ্য নয়।",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (editName.isBlank()) return@Button
+                        isSavingProfile = true
+                        scope.launch {
+                            authManager.updateProfile(name = editName)
+                            isSavingProfile = false
+                            showEditProfileDialog = false
+                        }
+                    },
+                    enabled = !isSavingProfile,
+                    modifier = Modifier.testTag("save_profile_button")
+                ) {
+                    if (isSavingProfile) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("সংরক্ষণ করুন")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showEditProfileDialog = false },
+                    enabled = !isSavingProfile
+                ) {
+                    Text("বাতিল")
+                }
+            }
+        )
     }
 }

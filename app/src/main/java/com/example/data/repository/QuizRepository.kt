@@ -51,12 +51,64 @@ class QuizRepository private constructor(context: Context) {
     private suspend fun syncFromFirestoreIfAvailable() {
         val fs = firestore ?: return
         try {
-            // Optional sync of published quizzes from Firestore
-            val quizDocs = fs.collection("quizzes").whereEqualTo("isPublished", true).get().await()
+            // 1. Sync Classes
+            val classDocs = fs.collection("classes").get().await()
+            if (!classDocs.isEmpty) {
+                val classList = classDocs.documents.mapNotNull { doc ->
+                    ClassEntity(
+                        id = doc.id,
+                        name = doc.getString("name") ?: "",
+                        bengaliName = doc.getString("bengaliName") ?: "",
+                        order = doc.getLong("order")?.toInt() ?: 0,
+                        iconName = doc.getString("iconName") ?: "school",
+                        isActive = doc.getBoolean("isActive") ?: true
+                    )
+                }
+                if (classList.isNotEmpty()) educationDao.insertClasses(classList)
+            }
+
+            // 2. Sync Subjects
+            val subDocs = fs.collection("subjects").get().await()
+            if (!subDocs.isEmpty) {
+                val subList = subDocs.documents.mapNotNull { doc ->
+                    SubjectEntity(
+                        id = doc.id,
+                        classId = doc.getString("classId") ?: "",
+                        name = doc.getString("name") ?: "",
+                        bengaliName = doc.getString("bengaliName") ?: "",
+                        iconName = doc.getString("iconName") ?: "book",
+                        colorHex = doc.getString("colorHex") ?: "#4F46E5",
+                        order = doc.getLong("order")?.toInt() ?: 0,
+                        isActive = doc.getBoolean("isActive") ?: true
+                    )
+                }
+                if (subList.isNotEmpty()) educationDao.insertSubjects(subList)
+            }
+
+            // 3. Sync Chapters
+            val chapDocs = fs.collection("chapters").get().await()
+            if (!chapDocs.isEmpty) {
+                val chapList = chapDocs.documents.mapNotNull { doc ->
+                    ChapterEntity(
+                        id = doc.id,
+                        subjectId = doc.getString("subjectId") ?: "",
+                        classId = doc.getString("classId") ?: "",
+                        title = doc.getString("title") ?: "",
+                        bengaliTitle = doc.getString("bengaliTitle") ?: "",
+                        chapterNumber = doc.getLong("chapterNumber")?.toInt() ?: 1,
+                        description = doc.getString("description") ?: "",
+                        order = doc.getLong("order")?.toInt() ?: 0,
+                        isActive = doc.getBoolean("isActive") ?: true
+                    )
+                }
+                if (chapList.isNotEmpty()) educationDao.insertChapters(chapList)
+            }
+
+            // 4. Sync Quizzes
+            val quizDocs = fs.collection("quizzes").get().await()
             if (!quizDocs.isEmpty) {
-                val list = mutableListOf<QuizEntity>()
-                for (doc in quizDocs.documents) {
-                    val entity = QuizEntity(
+                val quizList = quizDocs.documents.mapNotNull { doc ->
+                    QuizEntity(
                         id = doc.id,
                         chapterId = doc.getString("chapterId") ?: "",
                         subjectId = doc.getString("subjectId") ?: "",
@@ -67,15 +119,56 @@ class QuizRepository private constructor(context: Context) {
                         timeLimitSeconds = doc.getLong("timeLimitSeconds")?.toInt() ?: 300,
                         shuffleQuestions = doc.getBoolean("shuffleQuestions") ?: true,
                         shuffleOptions = doc.getBoolean("shuffleOptions") ?: true,
-                        isPublished = true,
+                        isPublished = doc.getBoolean("isPublished") ?: true,
                         questionsCount = doc.getLong("questionsCount")?.toInt() ?: 0,
                         totalPoints = doc.getLong("totalPoints")?.toInt() ?: 0,
                         createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
                         updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
                     )
-                    list.add(entity)
                 }
-                educationDao.insertQuizzes(list)
+                if (quizList.isNotEmpty()) educationDao.insertQuizzes(quizList)
+            }
+
+            // 5. Sync Questions
+            val questionDocs = fs.collection("questions").get().await()
+            if (!questionDocs.isEmpty) {
+                val qList = questionDocs.documents.mapNotNull { doc ->
+                    @Suppress("UNCHECKED_CAST")
+                    val opts = doc.get("options") as? List<String> ?: emptyList()
+                    @Suppress("UNCHECKED_CAST")
+                    val accepted = doc.get("acceptedAnswers") as? List<String> ?: emptyList()
+                    QuestionEntity(
+                        id = doc.id,
+                        quizId = doc.getString("quizId") ?: "",
+                        type = doc.getString("type") ?: "mcq",
+                        questionText = doc.getString("questionText") ?: "",
+                        options = opts,
+                        answer = doc.getString("answer") ?: "",
+                        acceptedAnswers = accepted,
+                        explanation = doc.getString("explanation") ?: "",
+                        points = doc.getLong("points")?.toInt() ?: 1,
+                        imageUrl = doc.getString("imageUrl"),
+                        order = doc.getLong("order")?.toInt() ?: 0
+                    )
+                }
+                if (qList.isNotEmpty()) educationDao.insertQuestions(qList)
+            }
+
+            // 6. Sync Announcements
+            val annDocs = fs.collection("announcements").get().await()
+            if (!annDocs.isEmpty) {
+                val annList = annDocs.documents.mapNotNull { doc ->
+                    AnnouncementEntity(
+                        id = doc.id,
+                        title = doc.getString("title") ?: "",
+                        message = doc.getString("message") ?: "",
+                        date = doc.getString("date") ?: "",
+                        isImportant = doc.getBoolean("isImportant") ?: false,
+                        isActive = doc.getBoolean("isActive") ?: true,
+                        createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis()
+                    )
+                }
+                if (annList.isNotEmpty()) announcementDao.insertAnnouncements(annList)
             }
         } catch (e: Exception) {
             // Offline or credentials not ready, room cache keeps working

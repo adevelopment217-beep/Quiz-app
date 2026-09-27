@@ -6,12 +6,15 @@ import com.example.core.model.QuestionType
 object CurriculumSeedData {
 
     fun getInitialClasses(): List<ClassEntity> {
-        val bengaliNumerals = listOf("১", "২", "৩", "৪", "৫", "৬", "৭", "৮", "৯", "১০")
+        val bengaliClassNames = listOf(
+            "প্রথম শ্রেণি", "দ্বিতীয় শ্রেণি", "তৃতীয় শ্রেণি", "চতুর্থ শ্রেণি", "পঞ্চম শ্রেণি",
+            "ষষ্ঠ শ্রেণি", "সপ্তম শ্রেণি", "অষ্টম শ্রেণি", "নবম শ্রেণি", "দশম শ্রেণি"
+        )
         return (1..10).map { i ->
             ClassEntity(
                 id = "class_$i",
                 name = "Class $i",
-                bengaliName = "শ্রেণি ${bengaliNumerals[i - 1]}",
+                bengaliName = bengaliClassNames[i - 1],
                 order = i,
                 iconName = "school",
                 isActive = true

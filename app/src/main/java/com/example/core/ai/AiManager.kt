@@ -31,6 +31,7 @@ class AiManager private constructor() {
     }
 
     private fun getEffectiveApiKey(): String {
+        if (config.apiKey.isNotBlank()) return config.apiKey
         return try {
             BuildConfig.GEMINI_API_KEY.ifBlank { "" }
         } catch (e: Exception) {

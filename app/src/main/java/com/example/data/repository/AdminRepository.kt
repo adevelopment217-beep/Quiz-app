@@ -52,6 +52,27 @@ class AdminRepository private constructor(context: Context) {
         )
     }
 
+    // --- Content Queries for Admin ---
+    fun getAllClasses(): Flow<List<EducationClass>> {
+        return educationDao.getAllClassesAdmin().map { list -> list.map { it.toDomain() } }
+    }
+
+    fun getSubjects(classId: String): Flow<List<Subject>> {
+        return educationDao.getSubjectsByClassAdmin(classId).map { list -> list.map { it.toDomain() } }
+    }
+
+    fun getChapters(subjectId: String): Flow<List<Chapter>> {
+        return educationDao.getChaptersBySubjectAdmin(subjectId).map { list -> list.map { it.toDomain() } }
+    }
+
+    fun getQuizzes(chapterId: String): Flow<List<Quiz>> {
+        return educationDao.getQuizzesByChapterAdmin(chapterId).map { list -> list.map { it.toDomain() } }
+    }
+
+    fun getQuestions(quizId: String): Flow<List<Question>> {
+        return educationDao.getQuestionsByQuiz(quizId).map { list -> list.map { it.toDomain() } }
+    }
+
     // --- Content CRUD: Classes ---
     suspend fun saveClass(eduClass: EducationClass, adminUid: String) = withContext(Dispatchers.IO) {
         val entity = ClassEntity(
@@ -65,6 +86,22 @@ class AdminRepository private constructor(context: Context) {
         educationDao.insertClass(entity)
         recordAudit(adminUid, "CLASS_SAVED", "classes", entity.id, "Class ${entity.name} saved")
         firestore?.collection("classes")?.document(entity.id)?.set(entity)
+    }
+
+    suspend fun toggleEnableClass(classId: String, enabled: Boolean, adminUid: String) = withContext(Dispatchers.IO) {
+        val item = educationDao.getClassById(classId) ?: return@withContext
+        val updated = item.copy(isActive = enabled)
+        educationDao.insertClass(updated)
+        recordAudit(adminUid, if (enabled) "CLASS_ENABLED" else "CLASS_DISABLED", "classes", classId, "Class status updated")
+        firestore?.collection("classes")?.document(classId)?.update("isActive", enabled)
+    }
+
+    suspend fun reorderClass(classId: String, newOrder: Int, adminUid: String) = withContext(Dispatchers.IO) {
+        val item = educationDao.getClassById(classId) ?: return@withContext
+        val updated = item.copy(order = newOrder)
+        educationDao.insertClass(updated)
+        recordAudit(adminUid, "CLASS_REORDERED", "classes", classId, "Order changed to $newOrder")
+        firestore?.collection("classes")?.document(classId)?.update("order", newOrder)
     }
 
     suspend fun deleteClass(classId: String, adminUid: String) = withContext(Dispatchers.IO) {
@@ -90,6 +127,22 @@ class AdminRepository private constructor(context: Context) {
         firestore?.collection("subjects")?.document(entity.id)?.set(entity)
     }
 
+    suspend fun toggleEnableSubject(subjectId: String, enabled: Boolean, adminUid: String) = withContext(Dispatchers.IO) {
+        val item = educationDao.getSubjectById(subjectId) ?: return@withContext
+        val updated = item.copy(isActive = enabled)
+        educationDao.insertSubject(updated)
+        recordAudit(adminUid, if (enabled) "SUBJECT_ENABLED" else "SUBJECT_DISABLED", "subjects", subjectId, "Subject status updated")
+        firestore?.collection("subjects")?.document(subjectId)?.update("isActive", enabled)
+    }
+
+    suspend fun reorderSubject(subjectId: String, newOrder: Int, adminUid: String) = withContext(Dispatchers.IO) {
+        val item = educationDao.getSubjectById(subjectId) ?: return@withContext
+        val updated = item.copy(order = newOrder)
+        educationDao.insertSubject(updated)
+        recordAudit(adminUid, "SUBJECT_REORDERED", "subjects", subjectId, "Order changed to $newOrder")
+        firestore?.collection("subjects")?.document(subjectId)?.update("order", newOrder)
+    }
+
     suspend fun deleteSubject(subjectId: String, adminUid: String) = withContext(Dispatchers.IO) {
         educationDao.deleteSubjectById(subjectId)
         recordAudit(adminUid, "SUBJECT_DELETED", "subjects", subjectId, "Subject deleted")
@@ -112,6 +165,22 @@ class AdminRepository private constructor(context: Context) {
         educationDao.insertChapter(entity)
         recordAudit(adminUid, "CHAPTER_SAVED", "chapters", entity.id, "Chapter ${entity.bengaliTitle} saved")
         firestore?.collection("chapters")?.document(entity.id)?.set(entity)
+    }
+
+    suspend fun toggleEnableChapter(chapterId: String, enabled: Boolean, adminUid: String) = withContext(Dispatchers.IO) {
+        val item = educationDao.getChapterById(chapterId) ?: return@withContext
+        val updated = item.copy(isActive = enabled)
+        educationDao.insertChapter(updated)
+        recordAudit(adminUid, if (enabled) "CHAPTER_ENABLED" else "CHAPTER_DISABLED", "chapters", chapterId, "Chapter status updated")
+        firestore?.collection("chapters")?.document(chapterId)?.update("isActive", enabled)
+    }
+
+    suspend fun reorderChapter(chapterId: String, newOrder: Int, adminUid: String) = withContext(Dispatchers.IO) {
+        val item = educationDao.getChapterById(chapterId) ?: return@withContext
+        val updated = item.copy(order = newOrder)
+        educationDao.insertChapter(updated)
+        recordAudit(adminUid, "CHAPTER_REORDERED", "chapters", chapterId, "Order changed to $newOrder")
+        firestore?.collection("chapters")?.document(chapterId)?.update("order", newOrder)
     }
 
     suspend fun deleteChapter(chapterId: String, adminUid: String) = withContext(Dispatchers.IO) {

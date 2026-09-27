@@ -9,6 +9,12 @@ interface EducationDao {
     @Query("SELECT * FROM classes WHERE isActive = 1 ORDER BY `order` ASC")
     fun getAllClasses(): Flow<List<ClassEntity>>
 
+    @Query("SELECT * FROM classes ORDER BY `order` ASC")
+    fun getAllClassesAdmin(): Flow<List<ClassEntity>>
+
+    @Query("SELECT * FROM classes WHERE id = :id LIMIT 1")
+    suspend fun getClassById(id: String): ClassEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertClasses(classes: List<ClassEntity>)
 
@@ -21,6 +27,12 @@ interface EducationDao {
     // Subjects
     @Query("SELECT * FROM subjects WHERE classId = :classId AND isActive = 1 ORDER BY `order` ASC")
     fun getSubjectsByClass(classId: String): Flow<List<SubjectEntity>>
+
+    @Query("SELECT * FROM subjects WHERE classId = :classId ORDER BY `order` ASC")
+    fun getSubjectsByClassAdmin(classId: String): Flow<List<SubjectEntity>>
+
+    @Query("SELECT * FROM subjects WHERE id = :id LIMIT 1")
+    suspend fun getSubjectById(id: String): SubjectEntity?
 
     @Query("SELECT * FROM subjects WHERE isActive = 1")
     fun getAllSubjects(): Flow<List<SubjectEntity>>
@@ -38,6 +50,12 @@ interface EducationDao {
     @Query("SELECT * FROM chapters WHERE subjectId = :subjectId AND isActive = 1 ORDER BY `order` ASC")
     fun getChaptersBySubject(subjectId: String): Flow<List<ChapterEntity>>
 
+    @Query("SELECT * FROM chapters WHERE subjectId = :subjectId ORDER BY `order` ASC")
+    fun getChaptersBySubjectAdmin(subjectId: String): Flow<List<ChapterEntity>>
+
+    @Query("SELECT * FROM chapters WHERE id = :id LIMIT 1")
+    suspend fun getChapterById(id: String): ChapterEntity?
+
     @Query("SELECT * FROM chapters WHERE isActive = 1")
     fun getAllChapters(): Flow<List<ChapterEntity>>
 
@@ -53,6 +71,9 @@ interface EducationDao {
     // Quizzes
     @Query("SELECT * FROM quizzes WHERE chapterId = :chapterId AND isPublished = 1 ORDER BY createdAt DESC")
     fun getQuizzesByChapter(chapterId: String): Flow<List<QuizEntity>>
+
+    @Query("SELECT * FROM quizzes WHERE chapterId = :chapterId ORDER BY createdAt DESC")
+    fun getQuizzesByChapterAdmin(chapterId: String): Flow<List<QuizEntity>>
 
     @Query("SELECT * FROM quizzes WHERE classId = :classId AND isPublished = 1")
     fun getQuizzesByClass(classId: String): Flow<List<QuizEntity>>

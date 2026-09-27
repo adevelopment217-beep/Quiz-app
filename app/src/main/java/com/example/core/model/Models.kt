@@ -172,7 +172,8 @@ data class AiProviderConfig(
     val isEnabled: Boolean = true,
     val isAssistantEnabled: Boolean = true,
     val isSemanticEvalEnabled: Boolean = true,
-    val isQualityCheckEnabled: Boolean = true
+    val isQualityCheckEnabled: Boolean = true,
+    val apiKey: String = ""
 )
 
 @JsonClass(generateAdapter = true)

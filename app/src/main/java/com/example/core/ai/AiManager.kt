@@ -1,16 +1,16 @@
 package com.example.core.ai
 
-import com.example.BuildConfig
 import com.example.core.model.AiCorrectionReport
 import com.example.core.model.AiEvaluationResult
 import com.example.core.model.AiProviderConfig
+import com.example.core.model.AiRequestLog
 import com.example.core.model.Question
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
@@ -18,44 +18,89 @@ import java.util.concurrent.TimeUnit
 class AiManager private constructor() {
 
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(45, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .writeTimeout(45, TimeUnit.SECONDS)
         .build()
+
+    private val providerFactory = AiProviderFactory(httpClient)
 
     var config: AiProviderConfig = AiProviderConfig()
         private set
+
+    private val _requestLogs = MutableStateFlow<List<AiRequestLog>>(emptyList())
+    val requestLogs: StateFlow<List<AiRequestLog>> = _requestLogs.asStateFlow()
 
     fun updateConfig(newConfig: AiProviderConfig) {
         config = newConfig
     }
 
-    private fun getEffectiveApiKey(): String {
-        if (config.apiKey.isNotBlank()) return config.apiKey
-        return try {
-            BuildConfig.GEMINI_API_KEY.ifBlank { "" }
-        } catch (e: Exception) {
-            ""
+    /**
+     * Unified pipeline for ALL AI requests (Tutor, Evaluation, Quality Check, and Test Connection).
+     * No feature makes direct or separate hard-coded API calls.
+     */
+    suspend fun executeRequest(
+        feature: String,
+        prompt: String,
+        systemPrompt: String = config.systemPrompt,
+        jsonOutput: Boolean = false
+    ): AiProviderResult = withContext(Dispatchers.IO) {
+        if (!config.isEnabled) {
+            return@withContext AiProviderResult(
+                success = false,
+                errorMessage = "এআই মাস্টার ইঞ্জিন বর্তমানে বন্ধ রয়েছে (Master AI Engine Disabled)",
+                providerName = config.provider,
+                modelName = config.model
+            )
         }
+
+        val provider = providerFactory.getProvider(config.provider)
+        val result = provider.generateCompletion(
+            prompt = prompt,
+            systemPrompt = systemPrompt,
+            config = config,
+            jsonOutput = jsonOutput
+        )
+
+        // Record diagnostic entry (Safe, never contains API key or user private credentials)
+        recordLog(
+            feature = feature,
+            result = result
+        )
+
+        return@withContext result
     }
 
     /**
-     * Multi-Level Evaluation:
+     * Real connection test using the exact same provider/model pipeline.
+     */
+    suspend fun testConnection(): AiProviderResult = withContext(Dispatchers.IO) {
+        val testPrompt = "Hello! Please reply in one short sentence confirming that the AI connection is successfully active."
+        return@withContext executeRequest(
+            feature = "TEST_CONNECTION",
+            prompt = testPrompt,
+            systemPrompt = "You are a connectivity tester. Respond briefly and affirmatively in Bengali or English.",
+            jsonOutput = false
+        )
+    }
+
+    /**
+     * Multi-Level Answer Evaluation:
      * Levels 1, 2, 3 -> DeterministicEvaluator
-     * Level 4 -> Semantic AI (Gemini / Provider)
-     * Level 5 -> Uncertain Fallback
+     * Level 4 -> Semantic AI (via active provider)
+     * Level 5 -> Uncertain Fallback (does not crash)
      */
     suspend fun evaluateAnswer(
         question: Question,
         userAnswer: String
     ): AiEvaluationResult = withContext(Dispatchers.IO) {
-        // Levels 1 to 3
+        // Levels 1 to 3: Deterministic exact, normalized, accepted match
         val deterministic = DeterministicEvaluator.evaluate(question, userAnswer)
         if (deterministic != null) {
             return@withContext deterministic
         }
 
-        // If AI is disabled or empty answer
+        // If AI or semantic eval is disabled or answer empty
         if (!config.isEnabled || !config.isSemanticEvalEnabled || userAnswer.isBlank()) {
             return@withContext AiEvaluationResult(
                 status = "INCORRECT",
@@ -70,7 +115,7 @@ class AiManager private constructor() {
         // Level 4: Semantic AI Evaluation
         try {
             val prompt = """
-                You are an educational quiz answer evaluator.
+                You are an educational quiz answer evaluator for Bangladeshi school curriculum.
                 Question: "${question.questionText}"
                 Question Type: "${question.type}"
                 Official Correct Answer: "${question.answer}"
@@ -79,27 +124,33 @@ class AiManager private constructor() {
                 Official Explanation: "${question.explanation}"
 
                 Task: Determine whether the user's answer is semantically and educationally correct.
-                For example, synonyms, translated names (e.g. Dhaka vs ঢাকা), full sentences containing the core answer, or spelling variations should be recognized as CORRECT if meaning matches.
-                
+                Accept spelling variations, translated names (e.g. Dhaka vs ঢাকা), full sentences expressing the core answer, or standard synonyms.
+
                 Respond ONLY with valid JSON in this exact structure:
                 {
                   "status": "CORRECT" or "INCORRECT" or "UNCERTAIN",
                   "confidence": 0.95,
-                  "reason": "Brief rationale in Bengali or English",
+                  "reason": "Brief rationale in Bengali",
                   "normalizedAnswer": "Cleaned up user answer",
                   "suggestedCorrectAnswer": "Official correct answer",
                   "explanation": "Helpful educational explanation"
                 }
             """.trimIndent()
 
-            val aiResponse = callGeminiApi(prompt, jsonOutput = true)
-            if (aiResponse.isNotBlank()) {
-                val cleaned = cleanJsonString(aiResponse)
+            val result = executeRequest(
+                feature = "SEMANTIC_EVALUATION",
+                prompt = prompt,
+                systemPrompt = "You are a strict JSON-only educational evaluator.",
+                jsonOutput = true
+            )
+
+            if (result.success && result.content.isNotBlank()) {
+                val cleaned = cleanJsonString(result.content)
                 val json = JSONObject(cleaned)
                 return@withContext AiEvaluationResult(
-                    status = json.optString("status", "UNCERTAIN"),
-                    confidence = json.optDouble("confidence", 0.5),
-                    reason = json.optString("reason", "AI evaluated answer."),
+                    status = json.optString("status", "UNCERTAIN").uppercase(),
+                    confidence = json.optDouble("confidence", 0.8),
+                    reason = json.optString("reason", "এআই উত্তর মূল্যায়ন করেছে।"),
                     normalizedAnswer = json.optString("normalizedAnswer", userAnswer),
                     suggestedCorrectAnswer = json.optString("suggestedCorrectAnswer", question.answer),
                     explanation = json.optString("explanation", question.explanation)
@@ -109,11 +160,11 @@ class AiManager private constructor() {
             e.printStackTrace()
         }
 
-        // Level 5: Uncertain / Safe fallback
+        // Level 5: Safe Uncertain fallback
         return@withContext AiEvaluationResult(
             status = "UNCERTAIN",
             confidence = 0.5,
-            reason = "Semantic evaluation unavailable. Please review with teacher or teacher's key.",
+            reason = "সেমেন্টিক মূল্যায়ন এই মুহূর্তে অনুপলব্ধ। শিক্ষক বা উত্তরমালা পর্যালোচনা করুন।",
             normalizedAnswer = userAnswer.trim(),
             suggestedCorrectAnswer = question.answer,
             explanation = question.explanation
@@ -128,30 +179,29 @@ class AiManager private constructor() {
         userQuery: String
     ): String = withContext(Dispatchers.IO) {
         if (!config.isEnabled || !config.isAssistantEnabled) {
-            return@withContext "AI সহকারী বর্তমানে নিষ্ক্রিয় রয়েছে বা ইন্টারনেট সংযোগ নেই।"
+            return@withContext "এআই গৃহশিক্ষক বর্তমানে নিষ্ক্রিয় রয়েছে। অ্যাডমিন সেটিংস থেকে চালু করুন।"
         }
 
-        val fullPrompt = """
+        val fullSystemPrompt = """
             ${config.systemPrompt}
             
             Current Educational Context:
             $contextPrompt
-            
-            Student Question/Request:
-            $userQuery
-            
-            Instructions:
-            - Respond in clear, encouraging, friendly tone.
-            - If student asks in Bengali ("এই প্রশ্নটা বুঝিয়ে দাও", "আমি কেন ভুল করেছি?", "এই অধ্যায় শেখাও"), answer in clear Bengali.
-            - Provide clear step-by-step logic, concepts, and memory tips.
-            - Format nicely with markdown bullet points if helpful.
         """.trimIndent()
 
-        val response = callGeminiApi(fullPrompt, jsonOutput = false)
-        if (response.isBlank()) {
-            return@withContext "দুঃখিত, এই মুহূর্তে AI উত্তর তৈরি করা সম্ভব হয়নি। অনুগ্রহ করে আপনার ইন্টারনেট সংযোগ বা API Key পরীক্ষা করুন।"
+        val result = executeRequest(
+            feature = "AI_TUTOR",
+            prompt = userQuery,
+            systemPrompt = fullSystemPrompt,
+            jsonOutput = false
+        )
+
+        if (result.success && result.content.isNotBlank()) {
+            return@withContext result.content
+        } else {
+            val err = result.errorMessage ?: "অজানা সমস্যা"
+            return@withContext "দুঃখিত, এআই গৃহশিক্ষকের উত্তর পাওয়া যায়নি।\n($err)"
         }
-        return@withContext response
     }
 
     /**
@@ -205,9 +255,15 @@ class AiManager private constructor() {
                 If no defects are found, return empty array [].
             """.trimIndent()
 
-            val response = callGeminiApi(prompt, jsonOutput = true)
-            if (response.isNotBlank()) {
-                val cleaned = cleanJsonString(response)
+            val result = executeRequest(
+                feature = "QUALITY_CHECK",
+                prompt = prompt,
+                systemPrompt = "You are a JSON-only curriculum auditor.",
+                jsonOutput = true
+            )
+
+            if (result.success && result.content.isNotBlank()) {
+                val cleaned = cleanJsonString(result.content)
                 val array = JSONArray(cleaned)
                 val reports = mutableListOf<AiCorrectionReport>()
                 for (i in 0 until array.length()) {
@@ -224,7 +280,7 @@ class AiManager private constructor() {
                             issueType = item.optString("issueType", "ANSWER_KEY_ERROR"),
                             currentValue = item.optString("currentValue", targetQ?.answer ?: ""),
                             proposedValue = item.optString("proposedValue", ""),
-                            reason = item.optString("reason", "Detected by AI quality control."),
+                            reason = item.optString("reason", "এআই কোয়ালিটি কন্ট্রোল দ্বারা চিহ্নিত।"),
                             confidence = item.optDouble("confidence", 0.9),
                             aiModel = config.model
                         )
@@ -239,61 +295,25 @@ class AiManager private constructor() {
         return@withContext emptyList()
     }
 
-    /**
-     * Direct Gemini REST API call with fallback
-     */
-    private suspend fun callGeminiApi(prompt: String, jsonOutput: Boolean): String = withContext(Dispatchers.IO) {
-        val apiKey = getEffectiveApiKey()
-        if (apiKey.isBlank()) {
-            return@withContext ""
-        }
-
-        val model = if (config.model.isNotBlank()) config.model else "gemini-3.5-flash"
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey"
-
-        val requestJson = JSONObject()
-        val contentsArray = JSONArray()
-        val contentObj = JSONObject()
-        val partsArray = JSONArray()
-        val partObj = JSONObject()
-        partObj.put("text", prompt)
-        partsArray.put(partObj)
-        contentObj.put("parts", partsArray)
-        contentsArray.put(contentObj)
-        requestJson.put("contents", contentsArray)
-
-        val genConfig = JSONObject()
-        genConfig.put("temperature", config.temperature)
-        genConfig.put("maxOutputTokens", config.maxTokens)
-        if (jsonOutput) {
-            genConfig.put("responseMimeType", "application/json")
-        }
-        requestJson.put("generationConfig", genConfig)
-
-        val mediaType = "application/json; charset=utf-8".toMediaType()
-        val body = requestJson.toString().toRequestBody(mediaType)
-        val request = Request.Builder()
-            .url(url)
-            .post(body)
-            .build()
-
-        try {
-            val response = httpClient.newCall(request).execute()
-            val responseBody = response.body?.string() ?: ""
-            if (!response.isSuccessful) {
-                return@withContext ""
-            }
-
-            val respJson = JSONObject(responseBody)
-            val candidates = respJson.optJSONArray("candidates")
-            val firstCandidate = candidates?.optJSONObject(0)
-            val content = firstCandidate?.optJSONObject("content")
-            val parts = content?.optJSONArray("parts")
-            val text = parts?.optJSONObject(0)?.optString("text", "") ?: ""
-            return@withContext text
-        } catch (e: Exception) {
-            e.printStackTrace()
-            return@withContext ""
+    private fun recordLog(feature: String, result: AiProviderResult) {
+        val entry = AiRequestLog(
+            id = "log_${System.currentTimeMillis()}",
+            timestamp = System.currentTimeMillis(),
+            feature = feature,
+            provider = result.providerName,
+            model = result.modelName,
+            endpointHost = result.endpointHost,
+            status = if (result.success) "SUCCESS" else "FAILED",
+            httpStatus = result.httpStatus,
+            latencyMs = result.latencyMs,
+            sanitizedError = result.errorMessage
+        )
+        val current = _requestLogs.value.toMutableList()
+        current.add(0, entry)
+        if (current.size > 30) {
+            _requestLogs.value = current.take(30)
+        } else {
+            _requestLogs.value = current
         }
     }
 

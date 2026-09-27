@@ -1,11 +1,11 @@
 package com.example.feature.admin
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,17 +22,20 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.core.ai.AiManager
 import com.example.core.model.*
 import com.example.data.repository.AdminRepository
 import com.example.ui.components.DifficultyBadge
+import com.example.ui.theme.ErrorRed
 import com.example.ui.theme.SuccessGreen
+import com.example.ui.theme.WarningOrange
 import kotlinx.coroutines.launch
 
-enum class ContentSection(val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
-    CLASSES("শ্রেণি (Classes)", Icons.Default.School),
-    SUBJECTS("বিষয় (Subjects)", Icons.Default.Book),
-    CHAPTERS("অধ্যায় (Chapters)", Icons.Default.Layers),
-    QUIZZES("কুইজ ও প্রশ্ন (Quizzes)", Icons.Default.Quiz)
+sealed class ContentNavState {
+    object Classes : ContentNavState()
+    data class Subjects(val eduClass: EducationClass) : ContentNavState()
+    data class Chapters(val eduClass: EducationClass, val subject: Subject) : ContentNavState()
+    data class Quizzes(val eduClass: EducationClass, val subject: Subject, val chapter: Chapter) : ContentNavState()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -41,44 +44,18 @@ fun AdminContentTab(
     adminRepository: AdminRepository,
     adminUid: String
 ) {
-    var currentSection by remember { mutableStateOf(ContentSection.CLASSES) }
+    var navState by remember { mutableStateOf<ContentNavState>(ContentNavState.Classes) }
     val scope = rememberCoroutineScope()
 
-    // Classes Flow
-    val classes by adminRepository.getAllClasses().collectAsState(initial = emptyList())
-    var selectedClassId by remember { mutableStateOf<String>("class_9") }
-
-    LaunchedEffect(classes) {
-        if (classes.isNotEmpty() && classes.none { it.id == selectedClassId }) {
-            selectedClassId = classes.first().id
+    // Handle back button hierarchically: Quizzes -> Chapters -> Subjects -> Classes
+    BackHandler(enabled = navState !is ContentNavState.Classes) {
+        when (val s = navState) {
+            is ContentNavState.Quizzes -> navState = ContentNavState.Chapters(s.eduClass, s.subject)
+            is ContentNavState.Chapters -> navState = ContentNavState.Subjects(s.eduClass)
+            is ContentNavState.Subjects -> navState = ContentNavState.Classes
+            ContentNavState.Classes -> {}
         }
     }
-
-    // Subjects Flow
-    val subjects by adminRepository.getSubjects(selectedClassId).collectAsState(initial = emptyList())
-    var selectedSubjectId by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(subjects) {
-        if (selectedSubjectId == null || subjects.none { it.id == selectedSubjectId }) {
-            selectedSubjectId = subjects.firstOrNull()?.id
-        }
-    }
-
-    // Chapters Flow
-    val chapters by adminRepository.getChapters(selectedSubjectId ?: "").collectAsState(initial = emptyList())
-    var selectedChapterId by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(chapters) {
-        if (selectedChapterId == null || chapters.none { it.id == selectedChapterId }) {
-            selectedChapterId = chapters.firstOrNull()?.id
-        }
-    }
-
-    // Quizzes Flow
-    val quizzes by adminRepository.getQuizzes(selectedChapterId ?: "").collectAsState(initial = emptyList())
-
-    // Active Quiz for Questions Dialog
-    var activeQuizForQuestions by remember { mutableStateOf<Quiz?>(null) }
 
     // Dialog States
     var showClassDialog by remember { mutableStateOf(false) }
@@ -93,37 +70,118 @@ fun AdminContentTab(
     var showQuizDialog by remember { mutableStateOf(false) }
     var editingQuiz by remember { mutableStateOf<Quiz?>(null) }
 
-    var itemToDelete by remember { mutableStateOf<Triple<String, String, () -> Unit>?>(null) } // type, name, deleteAction
+    var showJsonImportDialog by remember { mutableStateOf(false) }
+    var activeQuizForQuestions by remember { mutableStateOf<Quiz?>(null) }
+
+    var itemToDelete by remember { mutableStateOf<Triple<String, String, () -> Unit>?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Section Segmented Selector
-        ScrollableTabRow(
-            selectedTabIndex = currentSection.ordinal,
-            edgePadding = 16.dp,
-            modifier = Modifier.fillMaxWidth()
+        // ==========================================
+        // 1. HIERARCHICAL BREADCRUMB HEADER
+        // ==========================================
+        Surface(
+            tonalElevation = 2.dp,
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surface
         ) {
-            ContentSection.entries.forEach { section ->
-                Tab(
-                    selected = currentSection == section,
-                    onClick = { currentSection = section },
-                    text = { Text(section.title, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) },
-                    icon = { Icon(section.icon, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                    modifier = Modifier.testTag("admin_content_tab_${section.name.lowercase()}")
-                )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Back button if in nested view
+                if (navState !is ContentNavState.Classes) {
+                    IconButton(
+                        onClick = {
+                            when (val s = navState) {
+                                is ContentNavState.Quizzes -> navState = ContentNavState.Chapters(s.eduClass, s.subject)
+                                is ContentNavState.Chapters -> navState = ContentNavState.Subjects(s.eduClass)
+                                is ContentNavState.Subjects -> navState = ContentNavState.Classes
+                                ContentNavState.Classes -> {}
+                            }
+                        },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", modifier = Modifier.size(18.dp))
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
+                }
+
+                // Breadcrumb trail
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "কনটেন্ট",
+                        fontWeight = if (navState is ContentNavState.Classes) FontWeight.Bold else FontWeight.Normal,
+                        color = if (navState is ContentNavState.Classes) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp,
+                        modifier = Modifier.clickable { navState = ContentNavState.Classes }
+                    )
+
+                    when (val s = navState) {
+                        is ContentNavState.Subjects -> {
+                            Text(" › ", fontSize = 13.sp, color = MaterialTheme.colorScheme.outline)
+                            Text(
+                                text = s.eduClass.bengaliName,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontSize = 13.sp
+                            )
+                        }
+                        is ContentNavState.Chapters -> {
+                            Text(" › ", fontSize = 13.sp, color = MaterialTheme.colorScheme.outline)
+                            Text(
+                                text = s.eduClass.bengaliName,
+                                fontSize = 13.sp,
+                                modifier = Modifier.clickable { navState = ContentNavState.Subjects(s.eduClass) }
+                            )
+                            Text(" › ", fontSize = 13.sp, color = MaterialTheme.colorScheme.outline)
+                            Text(
+                                text = s.subject.bengaliName,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontSize = 13.sp
+                            )
+                        }
+                        is ContentNavState.Quizzes -> {
+                            Text(" › ", fontSize = 13.sp, color = MaterialTheme.colorScheme.outline)
+                            Text(
+                                text = s.eduClass.bengaliName,
+                                fontSize = 13.sp,
+                                modifier = Modifier.clickable { navState = ContentNavState.Subjects(s.eduClass) }
+                            )
+                            Text(" › ", fontSize = 13.sp, color = MaterialTheme.colorScheme.outline)
+                            Text(
+                                text = s.subject.bengaliName,
+                                fontSize = 13.sp,
+                                modifier = Modifier.clickable { navState = ContentNavState.Chapters(s.eduClass, s.subject) }
+                            )
+                            Text(" › ", fontSize = 13.sp, color = MaterialTheme.colorScheme.outline)
+                            Text(
+                                text = s.chapter.bengaliTitle,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontSize = 13.sp
+                            )
+                        }
+                        ContentNavState.Classes -> {}
+                    }
+                }
             }
         }
 
-        // Section Content
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .weight(1f)
-        ) {
-            when (currentSection) {
-                // ==========================================
-                // 1. CLASSES MANAGEMENT
-                // ==========================================
-                ContentSection.CLASSES -> {
+        // ==========================================
+        // 2. MAIN HIERARCHICAL CONTENT PANELS
+        // ==========================================
+        Box(modifier = Modifier.fillMaxSize().weight(1f)) {
+            when (val s = navState) {
+                // LEVEL 1: CLASS LIST
+                is ContentNavState.Classes -> {
+                    val classes by adminRepository.getAllClasses().collectAsState(initial = emptyList())
+
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(16.dp),
@@ -137,11 +195,11 @@ fun AdminContentTab(
                             ) {
                                 Column {
                                     Text(
-                                        text = "শ্রেণি ব্যবস্থাপনা (Class Management)",
+                                        text = "সকল শ্রেণি (Class Hierarchy)",
                                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                                     )
                                     Text(
-                                        text = "মোট শ্রেণি: ${classes.size}টি (ডায়নামিক ক্লাউড ডাটাবেজ)",
+                                        text = "যেকোনো শ্রেণিতে ট্যাপ করে এর বিষয়সমূহ ব্রাউজ করুন।",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -151,7 +209,8 @@ fun AdminContentTab(
                                         editingClass = null
                                         showClassDialog = true
                                     },
-                                    modifier = Modifier.testTag("admin_add_class_button")
+                                    modifier = Modifier.testTag("admin_add_class_button"),
+                                    shape = RoundedCornerShape(10.dp)
                                 ) {
                                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(4.dp))
@@ -160,221 +219,112 @@ fun AdminContentTab(
                             }
                         }
 
-                        if (classes.isEmpty()) {
-                            item {
-                                Card(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        items(classes) { cls ->
+                            Card(
+                                onClick = { navState = ContentNavState.Subjects(cls) },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (cls.isActive) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                                ),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(32.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                        modifier = Modifier.size(40.dp)
                                     ) {
-                                        Icon(Icons.Default.School, contentDescription = null, modifier = Modifier.size(40.dp))
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Text("কোনো শ্রেণি পাওয়া যায়নি।", fontWeight = FontWeight.Bold)
-                                        Text("নতুন শ্রেণি তৈরি করতে উপরের বাটনে চাপ দিন।", style = MaterialTheme.typography.bodySmall)
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text(
+                                                text = "#${cls.order}",
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                            )
+                                        }
                                     }
-                                }
-                            }
-                        } else {
-                            items(classes) { cls ->
-                                Card(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(14.dp),
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = if (cls.isActive) MaterialTheme.colorScheme.surface
-                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-                                    ),
-                                    border = androidx.compose.foundation.BorderStroke(
-                                        1.dp,
-                                        if (cls.id == selectedClassId) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                    Spacer(modifier = Modifier.width(14.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = cls.bengaliName,
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.titleMedium
+                                        )
+                                        Text(
+                                            text = "${cls.name} • ট্যাপ করে বিষয় দেখুন",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+
+                                    // Switch
+                                    Switch(
+                                        checked = cls.isActive,
+                                        onCheckedChange = { isEnabled ->
+                                            scope.launch { adminRepository.toggleEnableClass(cls.id, isEnabled, adminUid) }
+                                        }
                                     )
-                                ) {
-                                    Column(modifier = Modifier.padding(14.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Surface(
-                                                    shape = CircleShape,
-                                                    color = MaterialTheme.colorScheme.primaryContainer,
-                                                    modifier = Modifier.size(36.dp)
-                                                ) {
-                                                    Box(contentAlignment = Alignment.Center) {
-                                                        Text(
-                                                            text = "#${cls.order}",
-                                                            fontWeight = FontWeight.Bold,
-                                                            fontSize = 12.sp,
-                                                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                                                        )
-                                                    }
-                                                }
-                                                Spacer(modifier = Modifier.width(12.dp))
-                                                Column {
-                                                    Text(
-                                                        text = cls.bengaliName,
-                                                        fontWeight = FontWeight.Bold,
-                                                        style = MaterialTheme.typography.titleMedium
-                                                    )
-                                                    Text(
-                                                        text = "${cls.name} • ID: ${cls.id}",
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                }
-                                            }
 
-                                            // Enable/Disable Switch
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Switch(
-                                                    checked = cls.isActive,
-                                                    onCheckedChange = { isEnabled ->
-                                                        scope.launch {
-                                                            adminRepository.toggleEnableClass(cls.id, isEnabled, adminUid)
-                                                        }
-                                                    }
-                                                )
-                                            }
-                                        }
+                                    Spacer(modifier = Modifier.width(4.dp))
 
-                                        Spacer(modifier = Modifier.height(10.dp))
-                                        Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                                        Spacer(modifier = Modifier.height(10.dp))
-
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            // Reorder buttons
-                                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                IconButton(
-                                                    onClick = {
-                                                        if (cls.order > 1) {
-                                                            scope.launch {
-                                                                adminRepository.reorderClass(cls.id, cls.order - 1, adminUid)
-                                                            }
-                                                        }
-                                                    },
-                                                    enabled = cls.order > 1,
-                                                    modifier = Modifier.size(32.dp)
-                                                ) {
-                                                    Icon(Icons.Default.ArrowUpward, contentDescription = "Move Up", modifier = Modifier.size(16.dp))
-                                                }
-                                                IconButton(
-                                                    onClick = {
-                                                        scope.launch {
-                                                            adminRepository.reorderClass(cls.id, cls.order + 1, adminUid)
-                                                        }
-                                                    },
-                                                    modifier = Modifier.size(32.dp)
-                                                ) {
-                                                    Icon(Icons.Default.ArrowDownward, contentDescription = "Move Down", modifier = Modifier.size(16.dp))
-                                                }
-                                            }
-
-                                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                // View Subjects Button
-                                                OutlinedButton(
-                                                    onClick = {
-                                                        selectedClassId = cls.id
-                                                        currentSection = ContentSection.SUBJECTS
-                                                    },
-                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                                    modifier = Modifier.height(34.dp)
-                                                ) {
-                                                    Text("বিষয়সমূহ (${cls.bengaliName})", fontSize = 11.sp)
-                                                    Spacer(modifier = Modifier.width(4.dp))
-                                                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, modifier = Modifier.size(14.dp))
-                                                }
-
-                                                // Edit Button
-                                                IconButton(
-                                                    onClick = {
-                                                        editingClass = cls
-                                                        showClassDialog = true
-                                                    },
-                                                    modifier = Modifier.size(34.dp)
-                                                ) {
-                                                    Icon(Icons.Default.Edit, contentDescription = "Edit Class", modifier = Modifier.size(18.dp))
-                                                }
-
-                                                // Delete Button
-                                                IconButton(
-                                                    onClick = {
-                                                        itemToDelete = Triple("Class", cls.bengaliName) {
-                                                            scope.launch {
-                                                                adminRepository.deleteClass(cls.id, adminUid)
-                                                            }
-                                                        }
-                                                    },
-                                                    modifier = Modifier.size(34.dp)
-                                                ) {
-                                                    Icon(
-                                                        Icons.Default.Delete,
-                                                        contentDescription = "Delete Class",
-                                                        tint = MaterialTheme.colorScheme.error,
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                }
-                                            }
-                                        }
+                                    // Edit
+                                    IconButton(
+                                        onClick = {
+                                            editingClass = cls
+                                            showClassDialog = true
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(Icons.Default.Edit, contentDescription = "Edit", modifier = Modifier.size(16.dp))
                                     }
+
+                                    // Delete
+                                    IconButton(
+                                        onClick = {
+                                            itemToDelete = Triple("Class", cls.bengaliName) {
+                                                scope.launch { adminRepository.deleteClass(cls.id, adminUid) }
+                                            }
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                                    }
+
+                                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "View Subjects", modifier = Modifier.size(18.dp))
                                 }
                             }
                         }
                     }
                 }
 
-                // ==========================================
-                // 2. SUBJECTS MANAGEMENT
-                // ==========================================
-                ContentSection.SUBJECTS -> {
+                // LEVEL 2: SUBJECT LIST FOR SELECTED CLASS
+                is ContentNavState.Subjects -> {
+                    val subjects by adminRepository.getSubjects(s.eduClass.id).collectAsState(initial = emptyList())
+
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        // Class Selector Header
-                        item {
-                            Column {
-                                Text(
-                                    text = "শ্রেণি অনুযায়ী ফিল্টার করুন:",
-                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    items(classes) { cls ->
-                                        FilterChip(
-                                            selected = cls.id == selectedClassId,
-                                            onClick = { selectedClassId = cls.id },
-                                            label = { Text(cls.bengaliName) }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
                         item {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                val currentClass = classes.find { it.id == selectedClassId }
                                 Column {
                                     Text(
-                                        text = "${currentClass?.bengaliName ?: "নির্বাচিত শ্রেণি"}-এর বিষয়সমূহ",
+                                        text = "${s.eduClass.bengaliName}-এর বিষয়সমূহ",
                                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                                     )
                                     Text(
-                                        text = "মোট বিষয়: ${subjects.size}টি",
+                                        text = "যেকোনো বিষয়ে ট্যাপ করে এর অধ্যায়সমূহ দেখুন।",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -384,7 +334,8 @@ fun AdminContentTab(
                                         editingSubject = null
                                         showSubjectDialog = true
                                     },
-                                    modifier = Modifier.testTag("admin_add_subject_button")
+                                    modifier = Modifier.testTag("admin_add_subject_button"),
+                                    shape = RoundedCornerShape(10.dp)
                                 ) {
                                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(4.dp))
@@ -400,14 +351,12 @@ fun AdminContentTab(
                                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                                 ) {
                                     Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(32.dp),
+                                        modifier = Modifier.fillMaxWidth().padding(32.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
                                         Icon(Icons.Default.Book, contentDescription = null, modifier = Modifier.size(40.dp))
                                         Spacer(modifier = Modifier.height(8.dp))
-                                        Text("এই শ্রেণিতে কোনো বিষয় নেই।", fontWeight = FontWeight.Bold)
+                                        Text("${s.eduClass.bengaliName}-এ কোনো বিষয় নেই।", fontWeight = FontWeight.Bold)
                                         Text("নতুন বিষয় যোগ করতে উপরের বাটনে চাপ দিন।", style = MaterialTheme.typography.bodySmall)
                                     }
                                 }
@@ -415,147 +364,72 @@ fun AdminContentTab(
                         } else {
                             items(subjects) { sub ->
                                 Card(
+                                    onClick = { navState = ContentNavState.Chapters(s.eduClass, sub) },
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(14.dp),
                                     colors = CardDefaults.cardColors(
-                                        containerColor = if (sub.isActive) MaterialTheme.colorScheme.surface
-                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                                        containerColor = if (sub.isActive) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
                                     ),
-                                    border = androidx.compose.foundation.BorderStroke(
-                                        1.dp,
-                                        if (sub.id == selectedSubjectId) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                                    )
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                                 ) {
-                                    Column(modifier = Modifier.padding(14.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(16.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = try { Color(android.graphics.Color.parseColor(sub.colorHex)) } catch (e: Exception) { MaterialTheme.colorScheme.primary },
+                                            modifier = Modifier.size(40.dp)
                                         ) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Surface(
-                                                    shape = CircleShape,
-                                                    color = try {
-                                                        Color(android.graphics.Color.parseColor(sub.colorHex))
-                                                    } catch (e: Exception) {
-                                                        MaterialTheme.colorScheme.primary
-                                                    },
-                                                    modifier = Modifier.size(36.dp)
-                                                ) {
-                                                    Box(contentAlignment = Alignment.Center) {
-                                                        Icon(
-                                                            Icons.Default.MenuBook,
-                                                            contentDescription = null,
-                                                            tint = Color.White,
-                                                            modifier = Modifier.size(18.dp)
-                                                        )
-                                                    }
-                                                }
-                                                Spacer(modifier = Modifier.width(12.dp))
-                                                Column {
-                                                    Text(
-                                                        text = sub.bengaliName,
-                                                        fontWeight = FontWeight.Bold,
-                                                        style = MaterialTheme.typography.titleMedium
-                                                    )
-                                                    Text(
-                                                        text = "${sub.name} • ক্রম: #${sub.order}",
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                }
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(Icons.Default.MenuBook, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
                                             }
-
-                                            Switch(
-                                                checked = sub.isActive,
-                                                onCheckedChange = { isEnabled ->
-                                                    scope.launch {
-                                                        adminRepository.toggleEnableSubject(sub.id, isEnabled, adminUid)
-                                                    }
-                                                }
+                                        }
+                                        Spacer(modifier = Modifier.width(14.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = sub.bengaliName,
+                                                fontWeight = FontWeight.Bold,
+                                                style = MaterialTheme.typography.titleMedium
+                                            )
+                                            Text(
+                                                text = "${sub.name} • অধ্যায়সমূহ দেখতে ট্যাপ করুন",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
 
-                                        Spacer(modifier = Modifier.height(10.dp))
-                                        Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                                        Spacer(modifier = Modifier.height(10.dp))
+                                        Switch(
+                                            checked = sub.isActive,
+                                            onCheckedChange = { isEnabled ->
+                                                scope.launch { adminRepository.toggleEnableSubject(sub.id, isEnabled, adminUid) }
+                                            }
+                                        )
 
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
+                                        IconButton(
+                                            onClick = {
+                                                editingSubject = sub
+                                                showSubjectDialog = true
+                                            },
+                                            modifier = Modifier.size(32.dp)
                                         ) {
-                                            // Reorder buttons
-                                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                IconButton(
-                                                    onClick = {
-                                                        if (sub.order > 1) {
-                                                            scope.launch {
-                                                                adminRepository.reorderSubject(sub.id, sub.order - 1, adminUid)
-                                                            }
-                                                        }
-                                                    },
-                                                    enabled = sub.order > 1,
-                                                    modifier = Modifier.size(32.dp)
-                                                ) {
-                                                    Icon(Icons.Default.ArrowUpward, contentDescription = "Move Up", modifier = Modifier.size(16.dp))
-                                                }
-                                                IconButton(
-                                                    onClick = {
-                                                        scope.launch {
-                                                            adminRepository.reorderSubject(sub.id, sub.order + 1, adminUid)
-                                                        }
-                                                    },
-                                                    modifier = Modifier.size(32.dp)
-                                                ) {
-                                                    Icon(Icons.Default.ArrowDownward, contentDescription = "Move Down", modifier = Modifier.size(16.dp))
-                                                }
-                                            }
-
-                                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                OutlinedButton(
-                                                    onClick = {
-                                                        selectedSubjectId = sub.id
-                                                        currentSection = ContentSection.CHAPTERS
-                                                    },
-                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                                    modifier = Modifier.height(34.dp)
-                                                ) {
-                                                    Text("অধ্যায়সমূহ (${sub.bengaliName})", fontSize = 11.sp)
-                                                    Spacer(modifier = Modifier.width(4.dp))
-                                                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, modifier = Modifier.size(14.dp))
-                                                }
-
-                                                IconButton(
-                                                    onClick = {
-                                                        editingSubject = sub
-                                                        showSubjectDialog = true
-                                                    },
-                                                    modifier = Modifier.size(34.dp)
-                                                ) {
-                                                    Icon(Icons.Default.Edit, contentDescription = "Edit Subject", modifier = Modifier.size(18.dp))
-                                                }
-
-                                                IconButton(
-                                                    onClick = {
-                                                        itemToDelete = Triple("Subject", sub.bengaliName) {
-                                                            scope.launch {
-                                                                adminRepository.deleteSubject(sub.id, adminUid)
-                                                            }
-                                                        }
-                                                    },
-                                                    modifier = Modifier.size(34.dp)
-                                                ) {
-                                                    Icon(
-                                                        Icons.Default.Delete,
-                                                        contentDescription = "Delete Subject",
-                                                        tint = MaterialTheme.colorScheme.error,
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                }
-                                            }
+                                            Icon(Icons.Default.Edit, contentDescription = "Edit", modifier = Modifier.size(16.dp))
                                         }
+
+                                        IconButton(
+                                            onClick = {
+                                                itemToDelete = Triple("Subject", sub.bengaliName) {
+                                                    scope.launch { adminRepository.deleteSubject(sub.id, adminUid) }
+                                                }
+                                            },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                                        }
+
+                                        Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "View Chapters", modifier = Modifier.size(18.dp))
                                     }
                                 }
                             }
@@ -563,56 +437,28 @@ fun AdminContentTab(
                     }
                 }
 
-                // ==========================================
-                // 3. CHAPTERS MANAGEMENT
-                // ==========================================
-                ContentSection.CHAPTERS -> {
+                // LEVEL 3: CHAPTER LIST FOR SELECTED SUBJECT
+                is ContentNavState.Chapters -> {
+                    val chapters by adminRepository.getChapters(s.subject.id).collectAsState(initial = emptyList())
+
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        // Class & Subject filters
-                        item {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("১. শ্রেণি নির্বাচন:", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    items(classes) { cls ->
-                                        FilterChip(
-                                            selected = cls.id == selectedClassId,
-                                            onClick = { selectedClassId = cls.id },
-                                            label = { Text(cls.bengaliName, fontSize = 12.sp) }
-                                        )
-                                    }
-                                }
-
-                                Text("২. বিষয় নির্বাচন:", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    items(subjects) { sub ->
-                                        FilterChip(
-                                            selected = sub.id == selectedSubjectId,
-                                            onClick = { selectedSubjectId = sub.id },
-                                            label = { Text(sub.bengaliName, fontSize = 12.sp) }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
                         item {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                val currentSub = subjects.find { it.id == selectedSubjectId }
                                 Column {
                                     Text(
-                                        text = "${currentSub?.bengaliName ?: "নির্বাচিত বিষয়"}-এর অধ্যায়সমূহ",
+                                        text = "${s.subject.bengaliName}-এর অধ্যায়সমূহ",
                                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                                     )
                                     Text(
-                                        text = "মোট অধ্যায়: ${chapters.size}টি",
+                                        text = "যেকোনো অধ্যায়ে ট্যাপ করে এর কুইজ ম্যানেজ করুন।",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -622,8 +468,8 @@ fun AdminContentTab(
                                         editingChapter = null
                                         showChapterDialog = true
                                     },
-                                    enabled = selectedSubjectId != null,
-                                    modifier = Modifier.testTag("admin_add_chapter_button")
+                                    modifier = Modifier.testTag("admin_add_chapter_button"),
+                                    shape = RoundedCornerShape(10.dp)
                                 ) {
                                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(4.dp))
@@ -639,148 +485,90 @@ fun AdminContentTab(
                                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                                 ) {
                                     Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(32.dp),
+                                        modifier = Modifier.fillMaxWidth().padding(32.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
                                         Icon(Icons.Default.Layers, contentDescription = null, modifier = Modifier.size(40.dp))
                                         Spacer(modifier = Modifier.height(8.dp))
-                                        Text("এই বিষয়ে কোনো অধ্যায় নেই।", fontWeight = FontWeight.Bold)
-                                        Text("নতুন অধ্যায় তৈরি করতে উপরের বাটনে চাপ দিন।", style = MaterialTheme.typography.bodySmall)
+                                        Text("${s.subject.bengaliName}-এ কোনো অধ্যায় নেই।", fontWeight = FontWeight.Bold)
+                                        Text("নতুন অধ্যায় যোগ করতে উপরের বাটনে চাপ দিন।", style = MaterialTheme.typography.bodySmall)
                                     }
                                 }
                             }
                         } else {
                             items(chapters) { chap ->
                                 Card(
+                                    onClick = { navState = ContentNavState.Quizzes(s.eduClass, s.subject, chap) },
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(14.dp),
                                     colors = CardDefaults.cardColors(
-                                        containerColor = if (chap.isActive) MaterialTheme.colorScheme.surface
-                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                                        containerColor = if (chap.isActive) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
                                     ),
-                                    border = androidx.compose.foundation.BorderStroke(
-                                        1.dp,
-                                        if (chap.id == selectedChapterId) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                                    )
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                                 ) {
-                                    Column(modifier = Modifier.padding(14.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(16.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = MaterialTheme.colorScheme.secondaryContainer,
+                                            modifier = Modifier.size(40.dp)
                                         ) {
-                                            Column(modifier = Modifier.weight(1f)) {
+                                            Box(contentAlignment = Alignment.Center) {
                                                 Text(
-                                                    text = chap.bengaliTitle,
+                                                    text = "${chap.chapterNumber}",
                                                     fontWeight = FontWeight.Bold,
-                                                    style = MaterialTheme.typography.titleMedium
+                                                    fontSize = 14.sp,
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
                                                 )
-                                                Text(
-                                                    text = "অধ্যায় #${chap.chapterNumber} • ${chap.title}",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.primary
-                                                )
-                                                if (chap.description.isNotBlank()) {
-                                                    Text(
-                                                        text = chap.description,
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                }
                                             }
-
-                                            Switch(
-                                                checked = chap.isActive,
-                                                onCheckedChange = { isEnabled ->
-                                                    scope.launch {
-                                                        adminRepository.toggleEnableChapter(chap.id, isEnabled, adminUid)
-                                                    }
-                                                }
+                                        }
+                                        Spacer(modifier = Modifier.width(14.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = chap.bengaliTitle,
+                                                fontWeight = FontWeight.Bold,
+                                                style = MaterialTheme.typography.titleMedium
+                                            )
+                                            Text(
+                                                text = "অধ্যায় ${chap.chapterNumber} • কুইজ দেখতে ট্যাপ করুন",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
 
-                                        Spacer(modifier = Modifier.height(10.dp))
-                                        Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                                        Spacer(modifier = Modifier.height(10.dp))
+                                        Switch(
+                                            checked = chap.isActive,
+                                            onCheckedChange = { isEnabled ->
+                                                scope.launch { adminRepository.toggleEnableChapter(chap.id, isEnabled, adminUid) }
+                                            }
+                                        )
 
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
+                                        IconButton(
+                                            onClick = {
+                                                editingChapter = chap
+                                                showChapterDialog = true
+                                            },
+                                            modifier = Modifier.size(32.dp)
                                         ) {
-                                            // Reorder buttons
-                                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                IconButton(
-                                                    onClick = {
-                                                        if (chap.order > 1) {
-                                                            scope.launch {
-                                                                adminRepository.reorderChapter(chap.id, chap.order - 1, adminUid)
-                                                            }
-                                                        }
-                                                    },
-                                                    enabled = chap.order > 1,
-                                                    modifier = Modifier.size(32.dp)
-                                                ) {
-                                                    Icon(Icons.Default.ArrowUpward, contentDescription = "Move Up", modifier = Modifier.size(16.dp))
-                                                }
-                                                IconButton(
-                                                    onClick = {
-                                                        scope.launch {
-                                                            adminRepository.reorderChapter(chap.id, chap.order + 1, adminUid)
-                                                        }
-                                                    },
-                                                    modifier = Modifier.size(32.dp)
-                                                ) {
-                                                    Icon(Icons.Default.ArrowDownward, contentDescription = "Move Down", modifier = Modifier.size(16.dp))
-                                                }
-                                            }
-
-                                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                OutlinedButton(
-                                                    onClick = {
-                                                        selectedChapterId = chap.id
-                                                        currentSection = ContentSection.QUIZZES
-                                                    },
-                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                                    modifier = Modifier.height(34.dp)
-                                                ) {
-                                                    Text("কুইজসমূহ", fontSize = 11.sp)
-                                                    Spacer(modifier = Modifier.width(4.dp))
-                                                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, modifier = Modifier.size(14.dp))
-                                                }
-
-                                                IconButton(
-                                                    onClick = {
-                                                        editingChapter = chap
-                                                        showChapterDialog = true
-                                                    },
-                                                    modifier = Modifier.size(34.dp)
-                                                ) {
-                                                    Icon(Icons.Default.Edit, contentDescription = "Edit Chapter", modifier = Modifier.size(18.dp))
-                                                }
-
-                                                IconButton(
-                                                    onClick = {
-                                                        itemToDelete = Triple("Chapter", chap.bengaliTitle) {
-                                                            scope.launch {
-                                                                adminRepository.deleteChapter(chap.id, adminUid)
-                                                            }
-                                                        }
-                                                    },
-                                                    modifier = Modifier.size(34.dp)
-                                                ) {
-                                                    Icon(
-                                                        Icons.Default.Delete,
-                                                        contentDescription = "Delete Chapter",
-                                                        tint = MaterialTheme.colorScheme.error,
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                }
-                                            }
+                                            Icon(Icons.Default.Edit, contentDescription = "Edit", modifier = Modifier.size(16.dp))
                                         }
+
+                                        IconButton(
+                                            onClick = {
+                                                itemToDelete = Triple("Chapter", chap.bengaliTitle) {
+                                                    scope.launch { adminRepository.deleteChapter(chap.id, adminUid) }
+                                                }
+                                            },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                                        }
+
+                                        Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "View Quizzes", modifier = Modifier.size(18.dp))
                                     }
                                 }
                             }
@@ -788,82 +576,47 @@ fun AdminContentTab(
                     }
                 }
 
-                // ==========================================
-                // 4. QUIZZES & QUESTIONS MANAGEMENT
-                // ==========================================
-                ContentSection.QUIZZES -> {
+                // LEVEL 4: QUIZ LIST FOR SELECTED CHAPTER
+                is ContentNavState.Quizzes -> {
+                    val quizzes by adminRepository.getQuizzes(s.chapter.id).collectAsState(initial = emptyList())
+
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        // Filters
                         item {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("১. শ্রেণি:", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    items(classes) { cls ->
-                                        FilterChip(
-                                            selected = cls.id == selectedClassId,
-                                            onClick = { selectedClassId = cls.id },
-                                            label = { Text(cls.bengaliName, fontSize = 12.sp) }
-                                        )
-                                    }
-                                }
-
-                                Text("২. বিষয়:", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    items(subjects) { sub ->
-                                        FilterChip(
-                                            selected = sub.id == selectedSubjectId,
-                                            onClick = { selectedSubjectId = sub.id },
-                                            label = { Text(sub.bengaliName, fontSize = 12.sp) }
-                                        )
-                                    }
-                                }
-
-                                Text("৩. অধ্যায়:", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    items(chapters) { chap ->
-                                        FilterChip(
-                                            selected = chap.id == selectedChapterId,
-                                            onClick = { selectedChapterId = chap.id },
-                                            label = { Text(chap.bengaliTitle, fontSize = 12.sp) }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        item {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                val currentChap = chapters.find { it.id == selectedChapterId }
-                                Column {
-                                    Text(
-                                        text = "${currentChap?.bengaliTitle ?: "নির্বাচিত অধ্যায়"}-এর কুইজসমূহ",
-                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                                    )
-                                    Text(
-                                        text = "মোট কুইজ: ${quizzes.size}টি",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                Button(
-                                    onClick = {
-                                        editingQuiz = null
-                                        showQuizDialog = true
-                                    },
-                                    enabled = selectedChapterId != null,
-                                    modifier = Modifier.testTag("admin_add_quiz_button")
+                                Text(
+                                    text = "${s.chapter.bengaliTitle}-এর কুইজসমূহ",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("কুইজ তৈরি")
+                                    Button(
+                                        onClick = {
+                                            editingQuiz = null
+                                            showQuizDialog = true
+                                        },
+                                        modifier = Modifier.weight(1f).testTag("admin_add_quiz_button"),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("কুইজ তৈরি")
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = { showJsonImportDialog = true },
+                                        modifier = Modifier.weight(1f).testTag("admin_import_json_context_button"),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("JSON ইম্পোর্ট")
+                                    }
                                 }
                             }
                         }
@@ -875,15 +628,13 @@ fun AdminContentTab(
                                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                                 ) {
                                     Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(32.dp),
+                                        modifier = Modifier.fillMaxWidth().padding(32.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
                                         Icon(Icons.Default.Quiz, contentDescription = null, modifier = Modifier.size(40.dp))
                                         Spacer(modifier = Modifier.height(8.dp))
-                                        Text("এই অধ্যায়ে এখনও কোনো কুইজ নেই।", fontWeight = FontWeight.Bold)
-                                        Text("ম্যানুয়ালি কুইজ তৈরি করতে উপরের বাটন চাপুন অথবা JSON ইম্পোর্ট ট্যাব ব্যবহার করুন।", style = MaterialTheme.typography.bodySmall)
+                                        Text("এই অধ্যায়ে কোনো কুইজ নেই।", fontWeight = FontWeight.Bold)
+                                        Text("ম্যানুয়ালি কুইজ তৈরি করতে পারেন অথবা এক ক্লিকে JSON ইম্পোর্ট করতে পারেন।", style = MaterialTheme.typography.bodySmall)
                                     }
                                 }
                             }
@@ -893,7 +644,7 @@ fun AdminContentTab(
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(14.dp),
                                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                                 ) {
                                     Column(modifier = Modifier.padding(14.dp)) {
                                         Row(
@@ -923,22 +674,13 @@ fun AdminContentTab(
                                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Text(
-                                                text = "⏱️ ${quiz.timeLimitSeconds / 60} মিনিট",
-                                                style = MaterialTheme.typography.labelSmall
-                                            )
-                                            Text(
-                                                text = "❓ ${quiz.questionsCount}টি প্রশ্ন",
-                                                style = MaterialTheme.typography.labelSmall
-                                            )
-                                            Text(
-                                                text = "🏆 মোট পয়েন্ট: ${quiz.totalPoints}",
-                                                style = MaterialTheme.typography.labelSmall
-                                            )
+                                            Text("⏱️ ${quiz.timeLimitSeconds / 60} মিনিট", style = MaterialTheme.typography.labelSmall)
+                                            Text("❓ ${quiz.questionsCount}টি প্রশ্ন", style = MaterialTheme.typography.labelSmall)
+                                            Text("🏆 ${quiz.totalPoints} পয়েন্ট", style = MaterialTheme.typography.labelSmall)
                                         }
 
                                         Spacer(modifier = Modifier.height(10.dp))
-                                        Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                                        Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                                         Spacer(modifier = Modifier.height(10.dp))
 
                                         Row(
@@ -946,26 +688,22 @@ fun AdminContentTab(
                                             horizontalArrangement = Arrangement.SpaceBetween,
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            // Publish / Unpublish Toggle
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 Switch(
                                                     checked = quiz.isPublished,
                                                     onCheckedChange = { isPub ->
-                                                        scope.launch {
-                                                            adminRepository.togglePublishQuiz(quiz.id, isPub, adminUid)
-                                                        }
+                                                        scope.launch { adminRepository.togglePublishQuiz(quiz.id, isPub, adminUid) }
                                                     }
                                                 )
                                                 Spacer(modifier = Modifier.width(6.dp))
                                                 Text(
-                                                    text = if (quiz.isPublished) "প্রকাশিত" else "খসড়া (Draft)",
+                                                    text = if (quiz.isPublished) "প্রকাশিত" else "খসড়া",
                                                     style = MaterialTheme.typography.labelSmall,
                                                     color = if (quiz.isPublished) SuccessGreen else MaterialTheme.colorScheme.outline
                                                 )
                                             }
 
                                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                // Manage Questions Button
                                                 Button(
                                                     onClick = { activeQuizForQuestions = quiz },
                                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
@@ -976,7 +714,6 @@ fun AdminContentTab(
                                                     Text("প্রশ্নসমূহ (${quiz.questionsCount})", fontSize = 11.sp)
                                                 }
 
-                                                // Edit Quiz
                                                 IconButton(
                                                     onClick = {
                                                         editingQuiz = quiz
@@ -987,23 +724,15 @@ fun AdminContentTab(
                                                     Icon(Icons.Default.Edit, contentDescription = "Edit Quiz", modifier = Modifier.size(18.dp))
                                                 }
 
-                                                // Delete Quiz
                                                 IconButton(
                                                     onClick = {
                                                         itemToDelete = Triple("Quiz", quiz.title) {
-                                                            scope.launch {
-                                                                adminRepository.deleteQuiz(quiz.id, adminUid)
-                                                            }
+                                                            scope.launch { adminRepository.deleteQuiz(quiz.id, adminUid) }
                                                         }
                                                     },
                                                     modifier = Modifier.size(34.dp)
                                                 ) {
-                                                    Icon(
-                                                        Icons.Default.Delete,
-                                                        contentDescription = "Delete Quiz",
-                                                        tint = MaterialTheme.colorScheme.error,
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
+                                                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
                                                 }
                                             }
                                         }
@@ -1021,11 +750,11 @@ fun AdminContentTab(
     // DIALOGS SECTION
     // ==========================================
 
-    // Class Dialog (Create / Edit)
+    // Class Dialog
     if (showClassDialog) {
         ClassEditorDialog(
             existingClass = editingClass,
-            nextOrder = classes.size + 1,
+            nextOrder = 10,
             onDismiss = { showClassDialog = false },
             onSave = { clsToSave ->
                 scope.launch {
@@ -1036,53 +765,80 @@ fun AdminContentTab(
         )
     }
 
-    // Subject Dialog (Create / Edit)
+    // Subject Dialog
     if (showSubjectDialog) {
-        SubjectEditorDialog(
-            classId = selectedClassId,
-            existingSubject = editingSubject,
-            nextOrder = subjects.size + 1,
-            onDismiss = { showSubjectDialog = false },
-            onSave = { subToSave ->
-                scope.launch {
-                    adminRepository.saveSubject(subToSave, adminUid)
-                    showSubjectDialog = false
+        val currentClass = (navState as? ContentNavState.Subjects)?.eduClass
+            ?: (navState as? ContentNavState.Chapters)?.eduClass
+            ?: (navState as? ContentNavState.Quizzes)?.eduClass
+        if (currentClass != null) {
+            SubjectEditorDialog(
+                classId = currentClass.id,
+                existingSubject = editingSubject,
+                nextOrder = 5,
+                onDismiss = { showSubjectDialog = false },
+                onSave = { subToSave ->
+                    scope.launch {
+                        adminRepository.saveSubject(subToSave, adminUid)
+                        showSubjectDialog = false
+                    }
                 }
-            }
-        )
+            )
+        }
     }
 
-    // Chapter Dialog (Create / Edit)
+    // Chapter Dialog
     if (showChapterDialog) {
-        ChapterEditorDialog(
-            classId = selectedClassId,
-            subjectId = selectedSubjectId ?: "",
-            existingChapter = editingChapter,
-            nextOrder = chapters.size + 1,
-            onDismiss = { showChapterDialog = false },
-            onSave = { chapToSave ->
-                scope.launch {
-                    adminRepository.saveChapter(chapToSave, adminUid)
-                    showChapterDialog = false
+        val currentClass = (navState as? ContentNavState.Chapters)?.eduClass
+            ?: (navState as? ContentNavState.Quizzes)?.eduClass
+        val currentSubject = (navState as? ContentNavState.Chapters)?.subject
+            ?: (navState as? ContentNavState.Quizzes)?.subject
+        if (currentClass != null && currentSubject != null) {
+            ChapterEditorDialog(
+                classId = currentClass.id,
+                subjectId = currentSubject.id,
+                existingChapter = editingChapter,
+                nextOrder = 3,
+                onDismiss = { showChapterDialog = false },
+                onSave = { chapToSave ->
+                    scope.launch {
+                        adminRepository.saveChapter(chapToSave, adminUid)
+                        showChapterDialog = false
+                    }
                 }
-            }
-        )
+            )
+        }
     }
 
-    // Quiz Dialog (Create / Edit)
+    // Quiz Dialog
     if (showQuizDialog) {
-        QuizEditorDialog(
-            classId = selectedClassId,
-            subjectId = selectedSubjectId ?: "",
-            chapterId = selectedChapterId ?: "",
-            existingQuiz = editingQuiz,
-            onDismiss = { showQuizDialog = false },
-            onSave = { quizToSave ->
-                scope.launch {
-                    adminRepository.saveQuiz(quizToSave, adminUid)
-                    showQuizDialog = false
+        val qState = navState as? ContentNavState.Quizzes
+        if (qState != null) {
+            QuizEditorDialog(
+                classId = qState.eduClass.id,
+                subjectId = qState.subject.id,
+                chapterId = qState.chapter.id,
+                existingQuiz = editingQuiz,
+                onDismiss = { showQuizDialog = false },
+                onSave = { quizToSave ->
+                    scope.launch {
+                        adminRepository.saveQuiz(quizToSave, adminUid)
+                        showQuizDialog = false
+                    }
                 }
-            }
+            )
+        }
+    }
+
+    // Contextual JSON Import Dialog (automatically inherits Class, Subject, Chapter without re-asking!)
+    if (showJsonImportDialog && navState is ContentNavState.Quizzes) {
+        val qState = navState as ContentNavState.Quizzes
+        ContextualJsonImportDialog(
+            eduClass = qState.eduClass,
+            subject = qState.subject,
+            chapter = qState.chapter,
+            adminRepository = adminRepository,
+            adminUid = adminUid,
+            onDismiss = { showJsonImportDialog = false }
         )
     }
 
@@ -1091,7 +847,7 @@ fun AdminContentTab(
         AlertDialog(
             onDismissRequest = { itemToDelete = null },
             title = { Text("$type মুছে ফেলতে চান?") },
-            text = { Text("'$name' মুছে ফেলা হলে এর সাথে সংশ্লিষ্ট সকল ডেটা ডাটাবেজ থেকে বিলুপ্ত হবে। আপনি কি নিশ্চিত?") },
+            text = { Text("'$name' মুছে ফেলা হলে এর সাথে সংশ্লিষ্ট সকল ডেটা ডাটাবেজ থেকে মুছে যাবে।") },
             confirmButton = {
                 Button(
                     onClick = {
@@ -1100,7 +856,7 @@ fun AdminContentTab(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
-                    Text("মুছে ফেলুন (Delete)")
+                    Text("মুছে ফেলুন")
                 }
             },
             dismissButton = {
@@ -1120,6 +876,210 @@ fun AdminContentTab(
             onDismiss = { activeQuizForQuestions = null }
         )
     }
+}
+
+// ---------------------------------------------------------------------------
+// CONTEXTUAL JSON IMPORT DIALOG (NO RE-SELECTION NEEDED!)
+// ---------------------------------------------------------------------------
+@Composable
+fun ContextualJsonImportDialog(
+    eduClass: EducationClass,
+    subject: Subject,
+    chapter: Chapter,
+    adminRepository: AdminRepository,
+    adminUid: String,
+    onDismiss: () -> Unit
+) {
+    var jsonText by remember { mutableStateOf("") }
+    var parsedSchema by remember { mutableStateOf<QuizImportSchema?>(null) }
+    var detectedReports by remember { mutableStateOf<List<AiCorrectionReport>>(emptyList()) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+    var isCheckingAi by remember { mutableStateOf(false) }
+    var isSaving by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    val sampleTemplate = """
+{
+  "version": 1,
+  "title": "${chapter.bengaliTitle} মডেল কুইজ",
+  "description": "${subject.bengaliName} বিষয়ের ${chapter.bengaliTitle} অধ্যায়ের কুইজ",
+  "difficulty": "medium",
+  "timeLimit": 300,
+  "shuffleQuestions": true,
+  "shuffleOptions": true,
+  "questions": [
+    {
+      "type": "mcq",
+      "question": "What is 2 + 2?",
+      "options": ["2", "3", "4", "5"],
+      "answer": "4",
+      "acceptedAnswers": ["4", "four", "৪", "চার"],
+      "explanation": "2 + 2 = 4.",
+      "points": 1
+    },
+    {
+      "type": "fill_blank",
+      "question": "বাংলাদেশের রাজধানী কোনটি?",
+      "options": [],
+      "answer": "ঢাকা",
+      "acceptedAnswers": ["ঢাকা", "Dhaka", "dhaka"],
+      "explanation": "বাংলাদেশের রাজধানী ঢাকা।",
+      "points": 1
+    }
+  ]
+}
+    """.trimIndent()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text("JSON কুইজ ইম্পোর্ট", fontWeight = FontWeight.Bold)
+                Text(
+                    text = "লক্ষ্য: ${eduClass.bengaliName} › ${subject.bengaliName} › ${chapter.bengaliTitle}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("JSON কোড পেস্ট করুন:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                    TextButton(onClick = { jsonText = sampleTemplate }) {
+                        Text("টেমপ্লেট লোড", fontSize = 11.sp)
+                    }
+                }
+
+                OutlinedTextField(
+                    value = jsonText,
+                    onValueChange = {
+                        jsonText = it
+                        parsedSchema = null
+                        detectedReports = emptyList()
+                        statusMessage = null
+                    },
+                    modifier = Modifier.fillMaxWidth().height(150.dp),
+                    placeholder = { Text("Paste JSON here...") },
+                    shape = RoundedCornerShape(10.dp)
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            val res = adminRepository.parseJsonImport(jsonText)
+                            res.onSuccess {
+                                parsedSchema = it
+                                statusMessage = "✅ ভ্যালিডেশন সফল! (${it.questions.size}টি প্রশ্ন)"
+                            }.onFailure {
+                                statusMessage = "❌ ত্রুটি: ${it.localizedMessage}"
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("ভ্যালিডেট", fontSize = 12.sp)
+                    }
+
+                    Button(
+                        onClick = {
+                            val schema = parsedSchema
+                            if (schema != null) {
+                                isCheckingAi = true
+                                scope.launch {
+                                    val dummyQuestions = schema.questions.mapIndexed { idx, q ->
+                                        Question(
+                                            id = "temp_$idx",
+                                            quizId = "temp_quiz",
+                                            type = q.type,
+                                            questionText = q.question,
+                                            options = q.options,
+                                            answer = q.answer,
+                                            acceptedAnswers = q.acceptedAnswers,
+                                            explanation = q.explanation,
+                                            points = q.points,
+                                            order = idx + 1
+                                        )
+                                    }
+                                    val reports = AiManager.instance.inspectQuizQuality(
+                                        quizTitle = schema.title,
+                                        questions = dummyQuestions
+                                    )
+                                    detectedReports = reports
+                                    isCheckingAi = false
+                                }
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        enabled = parsedSchema != null && !isCheckingAi
+                    ) {
+                        if (isCheckingAi) {
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text("AI অডিট", fontSize = 12.sp)
+                        }
+                    }
+                }
+
+                if (statusMessage != null) {
+                    Text(
+                        text = statusMessage ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (statusMessage?.startsWith("✅") == true) SuccessGreen else ErrorRed
+                    )
+                }
+
+                if (detectedReports.isNotEmpty()) {
+                    Text(
+                        text = "AI সতর্কতা: ${detectedReports.size}টি সমস্যা সনাক্ত হয়েছে।",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = WarningOrange
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val schema = parsedSchema ?: return@Button
+                    isSaving = true
+                    scope.launch {
+                        val res = adminRepository.saveImportedQuiz(
+                            schema = schema,
+                            classId = eduClass.id,
+                            subjectId = subject.id,
+                            chapterId = chapter.id,
+                            adminUid = adminUid
+                        )
+                        isSaving = false
+                        res.onSuccess {
+                            onDismiss()
+                        }.onFailure {
+                            statusMessage = "ইম্পোর্ট ব্যর্থ: ${it.localizedMessage}"
+                        }
+                    }
+                },
+                enabled = parsedSchema != null && !isSaving
+            ) {
+                if (isSaving) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("অনুমোদন ও ইম্পোর্ট")
+                }
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text("বাতিল")
+            }
+        }
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1213,7 +1173,7 @@ fun SubjectEditorDialog(
                 OutlinedTextField(
                     value = bengaliName,
                     onValueChange = { bengaliName = it },
-                    label = { Text("বিষয়ের বাংলা নাম (যেমন: বাংলা, গণিত)") },
+                    label = { Text("বিষয়ের বাংলা নাম (যেমন: গণিত, বাংলা)") },
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
@@ -1230,7 +1190,7 @@ fun SubjectEditorDialog(
                 )
 
                 Text("কালার নির্বাচন করুন:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(presetColors) { hex ->
                         val isSelected = colorHex.equals(hex, ignoreCase = true)
                         Box(
@@ -1452,3 +1412,4 @@ fun QuizEditorDialog(
         }
     )
 }
+

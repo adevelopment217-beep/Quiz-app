@@ -177,6 +177,20 @@ data class AiProviderConfig(
 )
 
 @JsonClass(generateAdapter = true)
+data class AiRequestLog(
+    val id: String = "",
+    val timestamp: Long = System.currentTimeMillis(),
+    val feature: String = "", // TUTOR, EVALUATION, QUALITY_CHECK, TEST_CONNECTION
+    val provider: String = "",
+    val model: String = "",
+    val endpointHost: String = "",
+    val status: String = "SUCCESS", // SUCCESS, FAILED
+    val httpStatus: Int = 200,
+    val latencyMs: Long = 0L,
+    val sanitizedError: String? = null
+)
+
+@JsonClass(generateAdapter = true)
 data class Announcement(
     val id: String = "",
     val title: String = "",

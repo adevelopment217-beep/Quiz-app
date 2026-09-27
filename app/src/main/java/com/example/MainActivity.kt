@@ -33,6 +33,7 @@ class MainActivity : ComponentActivity() {
         val authManager = AuthManager.getInstance(this)
         val quizRepository = QuizRepository.getInstance(this)
         val adminRepository = AdminRepository.getInstance(this)
+        com.example.core.ai.AiConfigRepository.getInstance(this)
 
         setContent {
             MyApplicationTheme {
